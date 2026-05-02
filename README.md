@@ -6,10 +6,10 @@ A self-hosted web app for tracking grocery prices across stores.
 
 git clone this repo
 cp .env.example .env
-nano .env  (edit passwords)
-docker compose up -d
-
+nano .env
+docker compose up -d 
 Access at http://localhost:3001
+
 Default admin: admin@tracker.local / Admin123!
 
 ## Features
