@@ -1,0 +1,71 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: tracker-db
+    environment:
+      POSTGRES_DB: ${DB_NAME:-tracker}
+      POSTGRES_USER: ${DB_USER:-tracker_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    networks:
+      - tracker-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tracker_user} -d ${DB_NAME:-tracker}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    container_name: tracker-backend
+    environment:
+      DB_USER: ${DB_USER:-tracker_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-tracker}
+      DB_HOST: db
+      DB_PORT: 5432
+      SECRET_KEY: ${SECRET_KEY:-super-secret-key-change-in-production}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@tracker.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin123!}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - tracker-network
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: tracker-frontend
+    volumes:
+      - ./frontend/src:/app/src
+    environment:
+      - WATCHPACK_POLLING=true
+      - CHOKIDAR_USEPOLLING=true
+    depends_on:
+      - backend
+    networks:
+      - tracker-network
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    container_name: tracker-nginx
+    ports:
+      - "3001:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - tracker-network
+    restart: unless-stopped
+
+networks:
+  tracker-network:
+    driver: bridge
