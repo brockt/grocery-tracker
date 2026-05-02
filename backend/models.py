@@ -31,6 +31,21 @@ class User(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
+class Category(db.Model):
+    __tablename__ = 'categories'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    items = db.relationship('Item', backref='category_ref', lazy=True)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name
+        }
+
 class Store(db.Model):
     __tablename__ = 'stores'
     
@@ -49,14 +64,16 @@ class Item(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), unique=True, nullable=False)
-    category = db.Column(db.String(100))
+    category_id = db.Column(db.Integer, db.ForeignKey('categories.id'), nullable=True)
+    category = db.Column(db.String(100))  # Kept for backward compatibility
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
     def to_dict(self):
         return {
             'id': self.id,
             'name': self.name,
-            'category': self.category
+            'category': self.category_ref.name if self.category_ref else (self.category or ''),
+            'category_id': self.category_id
         }
 
 class Packaging(db.Model):
@@ -95,7 +112,7 @@ class Purchase(db.Model):
     item_id = db.Column(db.Integer, db.ForeignKey('items.id'), nullable=False)
     packaging_id = db.Column(db.Integer, db.ForeignKey('packaging.id'), nullable=False)
     measurement_id = db.Column(db.Integer, db.ForeignKey('measurements.id'), nullable=False)
-    pricing_type = db.Column(db.String(20), nullable=False, default='unit')  # 'unit' or 'weight'
+    pricing_type = db.Column(db.String(20), nullable=False, default='unit')
     size = db.Column(db.Float, nullable=False)
     quantity = db.Column(db.Float, nullable=False)
     price = db.Column(db.Float, nullable=False)

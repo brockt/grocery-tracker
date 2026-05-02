@@ -6,17 +6,33 @@ function AdminOptions() {
   const [activeTab, setActiveTab] = useState('stores');
   const [stores, setStores] = useState([]);
   const [items, setItems] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [packaging, setPackaging] = useState([]);
   const [measurements, setMeasurements] = useState([]);
   const [newName, setNewName] = useState('');
   const [newCategory, setNewCategory] = useState('');
+  const [newCategoryId, setNewCategoryId] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState('');
   const [editCategory, setEditCategory] = useState('');
+  const [editCategoryId, setEditCategoryId] = useState('');
+
+  useEffect(() => {
+    fetchCategories();
+  }, []);
 
   useEffect(() => {
     fetchAll();
   }, [activeTab]);
+
+  const fetchCategories = async () => {
+    try {
+      const response = await api.get('/api/admin/categories');
+      setCategories(response.data);
+    } catch (error) {
+      // Silently fail - categories may not be critical for all views
+    }
+  };
 
   const fetchAll = () => {
     switch(activeTab) {
@@ -25,6 +41,9 @@ function AdminOptions() {
         break;
       case 'items':
         fetchItems();
+        break;
+      case 'categories':
+        fetchCategories();
         break;
       case 'packaging':
         fetchPackaging();
@@ -75,16 +94,25 @@ function AdminOptions() {
     e.preventDefault();
     try {
       const endpoint = `/api/admin/${activeTab}`;
-      const data = activeTab === 'items' 
-        ? { name: newName, category: newCategory }
-        : activeTab === 'measurements'
-        ? { unit: newName }
-        : { name: newName };
+      let data;
+      
+      if (activeTab === 'items') {
+        data = { 
+          name: newName, 
+          category_id: newCategoryId || null,
+          category: newCategory || ''
+        };
+      } else if (activeTab === 'measurements') {
+        data = { unit: newName };
+      } else {
+        data = { name: newName };
+      }
 
       await api.post(endpoint, data);
       toast.success(`${activeTab.slice(0, -1)} added successfully`);
       setNewName('');
       setNewCategory('');
+      setNewCategoryId('');
       fetchAll();
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to add');
@@ -94,11 +122,19 @@ function AdminOptions() {
   const handleEdit = async (id) => {
     try {
       const endpoint = `/api/admin/${activeTab}/${id}`;
-      const data = activeTab === 'items'
-        ? { name: editName, category: editCategory }
-        : activeTab === 'measurements'
-        ? { unit: editName }
-        : { name: editName };
+      let data;
+      
+      if (activeTab === 'items') {
+        data = { 
+          name: editName, 
+          category_id: editCategoryId || null,
+          category: editCategory || ''
+        };
+      } else if (activeTab === 'measurements') {
+        data = { unit: editName };
+      } else {
+        data = { name: editName };
+      }
 
       await api.put(endpoint, data);
       toast.success('Updated successfully');
@@ -125,12 +161,14 @@ function AdminOptions() {
     setEditingId(item.id);
     setEditName(item.name || item.unit);
     setEditCategory(item.category || '');
+    setEditCategoryId(item.category_id || '');
   };
 
   const cancelEdit = () => {
     setEditingId(null);
     setEditName('');
     setEditCategory('');
+    setEditCategoryId('');
   };
 
   return (
@@ -146,9 +184,15 @@ function AdminOptions() {
         </button>
         <button 
           className={`tab ${activeTab === 'items' ? 'active' : ''}`}
-          onClick={() => setActiveTab('items')}
+          onClick={() => { setActiveTab('items'); fetchCategories(); }}
         >
           Items
+        </button>
+        <button 
+          className={`tab ${activeTab === 'categories' ? 'active' : ''}`}
+          onClick={() => setActiveTab('categories')}
+        >
+          Categories
         </button>
         <button 
           className={`tab ${activeTab === 'packaging' ? 'active' : ''}`}
@@ -165,36 +209,70 @@ function AdminOptions() {
       </div>
 
       <div className="tab-content">
-        <div className="add-form">
-          <h3>Add New {activeTab.slice(0, -1)}</h3>
-          <form onSubmit={handleAdd}>
-            <div className="form-row">
+        {/* Add Form */}
+        {activeTab !== 'categories' ? (
+          <div className="add-form">
+            <h3>Add New {activeTab.slice(0, -1)}</h3>
+            <form onSubmit={handleAdd}>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>{activeTab === 'measurements' ? 'Unit' : 'Name'}</label>
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                    required
+                    placeholder={activeTab === 'measurements' ? 'e.g., ml, L, kg' : 'Enter name'}
+                    style={{ height: '44px' }}
+                  />
+                </div>
+                {activeTab === 'items' && (
+                  <div className="form-group">
+                    <label>Category</label>
+                    <select 
+                      value={newCategoryId} 
+                      onChange={(e) => {
+                        setNewCategoryId(e.target.value);
+                        if (e.target.value) {
+                          const cat = categories.find(c => c.id === parseInt(e.target.value));
+                          setNewCategory(cat ? cat.name : '');
+                        } else {
+                          setNewCategory('');
+                        }
+                      }}
+                      style={{ height: '44px' }}
+                    >
+                      <option value="">None</option>
+                      {categories.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </div>
+              <button type="submit" className="btn-primary">Add</button>
+            </form>
+          </div>
+        ) : (
+          <div className="add-form">
+            <h3>Add New Category</h3>
+            <form onSubmit={handleAdd}>
               <div className="form-group">
-                <label>{activeTab === 'measurements' ? 'Unit' : 'Name'}</label>
+                <label>Category Name</label>
                 <input
                   type="text"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   required
-                  placeholder={activeTab === 'measurements' ? 'e.g., ml, L, kg' : 'Enter name'}
+                  placeholder="e.g., Dairy, Produce, Spices"
                 />
               </div>
-              {activeTab === 'items' && (
-                <div className="form-group">
-                  <label>Category (optional)</label>
-                  <input
-                    type="text"
-                    value={newCategory}
-                    onChange={(e) => setNewCategory(e.target.value)}
-                    placeholder="e.g., Dairy, Produce"
-                  />
-                </div>
-              )}
-            </div>
-            <button type="submit" className="btn-primary">Add</button>
-          </form>
-        </div>
+              <button type="submit" className="btn-primary">Add</button>
+            </form>
+          </div>
+        )}
 
+        {/* Lists */}
         <div className="list-section">
           <h3>Existing {activeTab}</h3>
           <div className="table-responsive">
@@ -203,19 +281,17 @@ function AdminOptions() {
                 <tr>
                   <th>Name</th>
                   {activeTab === 'items' && <th>Category</th>}
+                  {activeTab === 'categories' && <th>Items Using</th>}
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
+                {/* Stores */}
                 {activeTab === 'stores' && stores.map(store => (
                   <tr key={store.id}>
                     <td>
                       {editingId === store.id ? (
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                        />
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       ) : store.name}
                     </td>
                     <td>
@@ -233,24 +309,23 @@ function AdminOptions() {
                     </td>
                   </tr>
                 ))}
+
+                {/* Items */}
                 {activeTab === 'items' && items.map(item => (
                   <tr key={item.id}>
                     <td>
                       {editingId === item.id ? (
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                        />
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       ) : item.name}
                     </td>
                     <td>
                       {editingId === item.id ? (
-                        <input
-                          type="text"
-                          value={editCategory}
-                          onChange={(e) => setEditCategory(e.target.value)}
-                        />
+                        <select value={editCategoryId} onChange={(e) => setEditCategoryId(e.target.value)}>
+                          <option value="">None</option>
+                          {categories.map(c => (
+                            <option key={c.id} value={c.id}>{c.name}</option>
+                          ))}
+                        </select>
                       ) : (item.category || '-')}
                     </td>
                     <td>
@@ -268,15 +343,40 @@ function AdminOptions() {
                     </td>
                   </tr>
                 ))}
+
+                {/* Categories */}
+                {activeTab === 'categories' && categories.map(cat => (
+                  <tr key={cat.id}>
+                    <td>
+                      {editingId === cat.id ? (
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} />
+                      ) : cat.name}
+                    </td>
+                    <td>
+                      {items.filter(i => i.category_id === cat.id).length}
+                    </td>
+                    <td>
+                      {editingId === cat.id ? (
+                        <>
+                          <button className="btn-small btn-edit" onClick={() => handleEdit(cat.id)}>Save</button>
+                          <button className="btn-small btn-delete" onClick={cancelEdit}>Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <button className="btn-small btn-edit" onClick={() => startEdit(cat)}>Edit</button>
+                          <button className="btn-small btn-delete" onClick={() => handleDelete(cat.id, cat.name)}>Delete</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+
+                {/* Packaging */}
                 {activeTab === 'packaging' && packaging.map(pack => (
                   <tr key={pack.id}>
                     <td>
                       {editingId === pack.id ? (
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                        />
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       ) : pack.name}
                     </td>
                     <td>
@@ -294,15 +394,13 @@ function AdminOptions() {
                     </td>
                   </tr>
                 ))}
+
+                {/* Measurements */}
                 {activeTab === 'measurements' && measurements.map(meas => (
                   <tr key={meas.id}>
                     <td>
                       {editingId === meas.id ? (
-                        <input
-                          type="text"
-                          value={editName}
-                          onChange={(e) => setEditName(e.target.value)}
-                        />
+                        <input type="text" value={editName} onChange={(e) => setEditName(e.target.value)} />
                       ) : meas.unit}
                     </td>
                     <td>

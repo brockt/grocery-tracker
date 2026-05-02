@@ -1,25 +1,22 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-from models import db, User, Purchase, Store, Item, Packaging, Measurement
+from models import db, User, Purchase, Store, Item, Packaging, Measurement, Category
 from datetime import datetime, timedelta
 import os
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, text
 import time
 from urllib.parse import quote_plus
 
 app = Flask(__name__)
 CORS(app)
 
-# Build database URL from separate components
 db_user = os.getenv('DB_USER', 'tracker_user')
 db_password = os.getenv('DB_PASSWORD', 'ChangeMe123!')
 db_name = os.getenv('DB_NAME', 'tracker')
 db_host = os.getenv('DB_HOST', 'db')
 db_port = os.getenv('DB_PORT', '5432')
-
 database_url = f'postgresql://{db_user}:{quote_plus(db_password)}@{db_host}:{db_port}/{db_name}?connect_timeout=10'
-
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.getenv('SECRET_KEY', 'super-secret-key')
@@ -28,8 +25,68 @@ app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=24)
 db.init_app(app)
 jwt = JWTManager(app)
 
+def run_migration():
+    """Add category_id column to existing items table if it doesn't exist"""
+    try:
+        with db.engine.connect() as conn:
+            # Check if column exists
+            result = conn.execute(text("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='items' AND column_name='category_id'
+            """)).fetchone()
+            
+            if not result:
+                conn.execute(text("ALTER TABLE items ADD COLUMN category_id INTEGER REFERENCES categories(id)"))
+                conn.commit()
+                print("Added category_id column to items table")
+            else:
+                print("category_id column already exists")
+                
+            # Create categories table if needed
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS categories (
+                    id SERIAL PRIMARY KEY,
+                    name VARCHAR(100) UNIQUE NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.commit()
+            print("Categories table ready")
+    except Exception as e:
+        print(f"Migration note: {e}")
+
+def migrate_categories():
+    """Create Category records from existing item.category strings and link them"""
+    try:
+        # Get all distinct category strings from items
+        with db.engine.connect() as conn:
+            result = conn.execute(text(
+                "SELECT DISTINCT category FROM items WHERE category IS NOT NULL AND category != ''"
+            )).fetchall()
+            
+        category_names = [r[0] for r in result]
+        
+        # Create Category records for each unique name
+        for name in category_names:
+            if not Category.query.filter_by(name=name).first():
+                db.session.add(Category(name=name))
+        db.session.commit()
+        
+        # Link items to their categories
+        items = Item.query.filter(Item.category.isnot(None), Item.category != '').all()
+        for item in items:
+            if item.category_id is None:
+                cat = Category.query.filter_by(name=item.category).first()
+                if cat:
+                    item.category_id = cat.id
+        db.session.commit()
+        print("Category migration completed successfully")
+    except Exception as e:
+        db.session.rollback()
+        print(f"Category migration note: {e}")
+
 def seed_default_options():
-    """Seed default options if tables are empty"""
     default_stores = ['Walmart', 'Costco', 'Loblaws', 'Sobeys', 'Metro', 'No Frills', 'Food Basics', 'Real Canadian Superstore']
     default_items = ['Milk', 'Bread', 'Eggs', 'Butter', 'Cheese', 'Chicken Breast', 'Ground Beef', 'Rice', 'Pasta', 'Tomatoes', 'Apples', 'Bananas']
     default_packaging = ['Bottle', 'Can', 'Jar', 'Bag', 'Box', 'Carton', 'Tub', 'Pouch', 'Pack', 'Wrapper']
@@ -38,25 +95,20 @@ def seed_default_options():
     if Store.query.count() == 0:
         for name in default_stores:
             db.session.add(Store(name=name))
-    
     if Item.query.count() == 0:
         for name in default_items:
             db.session.add(Item(name=name))
-    
     if Packaging.query.count() == 0:
         for name in default_packaging:
             db.session.add(Packaging(name=name))
-    
     if Measurement.query.count() == 0:
         for unit in default_measurements:
             db.session.add(Measurement(unit=unit))
-    
     db.session.commit()
 
 def init_admin():
     admin_email = os.getenv('ADMIN_EMAIL', 'admin@tracker.local')
     admin_password = os.getenv('ADMIN_PASSWORD', 'Admin123!')
-    
     if not User.query.filter_by(email=admin_email).first():
         admin = User(
             email=admin_email,
@@ -71,11 +123,16 @@ def init_admin():
 def wait_for_db():
     max_retries = 30
     retry_count = 0
-    
     while retry_count < max_retries:
         try:
             with app.app_context():
+                # First create tables that may not exist
                 db.create_all()
+                # Then run migration to add category_id to existing items
+                run_migration()
+                # Migrate existing category data
+                migrate_categories()
+                # Seed default data
                 seed_default_options()
                 init_admin()
                 print("Database initialized successfully")
@@ -84,7 +141,6 @@ def wait_for_db():
             retry_count += 1
             print(f"Waiting for database... ({retry_count}/{max_retries}): {e}")
             time.sleep(2)
-    
     return False
 
 # Auth routes
@@ -92,7 +148,6 @@ def wait_for_db():
 def login():
     data = request.get_json()
     user = User.query.filter_by(email=data.get('email')).first()
-    
     if user and user.check_password(data.get('password')):
         access_token = create_access_token(identity=str(user.id), additional_claims={'is_admin': user.is_admin})
         return jsonify({
@@ -104,27 +159,66 @@ def login():
                 'is_admin': user.is_admin
             }
         }), 200
-    
     return jsonify({'message': 'Invalid credentials'}), 401
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.get_json()
-    
     if User.query.filter_by(email=data.get('email')).first():
         return jsonify({'message': 'User already exists'}), 400
-    
     user = User(
         email=data['email'],
         name=data['name'],
         is_admin=False
     )
     user.set_password(data['password'])
-    
     db.session.add(user)
     db.session.commit()
-    
     return jsonify({'message': 'User created successfully'}), 201
+
+# Categories CRUD
+@app.route('/api/admin/categories', methods=['GET', 'POST'])
+@jwt_required()
+def manage_categories():
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user or not user.is_admin:
+        return jsonify({'message': 'Admin access required'}), 403
+    
+    if request.method == 'GET':
+        categories = Category.query.order_by(Category.name).all()
+        return jsonify([c.to_dict() for c in categories]), 200
+    elif request.method == 'POST':
+        data = request.get_json()
+        if Category.query.filter_by(name=data['name']).first():
+            return jsonify({'message': 'Category already exists'}), 400
+        category = Category(name=data['name'])
+        db.session.add(category)
+        db.session.commit()
+        return jsonify(category.to_dict()), 201
+
+@app.route('/api/admin/categories/<int:id>', methods=['PUT', 'DELETE'])
+@jwt_required()
+def manage_category(id):
+    user_id = int(get_jwt_identity())
+    user = User.query.get(user_id)
+    if not user or not user.is_admin:
+        return jsonify({'message': 'Admin access required'}), 403
+    
+    category = Category.query.get_or_404(id)
+    if request.method == 'PUT':
+        data = request.get_json()
+        if Category.query.filter(Category.name == data['name'], Category.id != id).first():
+            return jsonify({'message': 'Category name already exists'}), 400
+        category.name = data['name']
+        db.session.commit()
+        return jsonify(category.to_dict()), 200
+    elif request.method == 'DELETE':
+        # Set category_id to null for items using this category
+        Item.query.filter_by(category_id=id).update({Item.category_id: None})
+        db.session.delete(category)
+        db.session.commit()
+        return jsonify({'message': 'Category deleted'}), 200
 
 # Admin management routes
 @app.route('/api/admin/stores', methods=['GET', 'POST'])
@@ -138,12 +232,10 @@ def manage_stores():
     if request.method == 'GET':
         stores = Store.query.order_by(Store.name).all()
         return jsonify([s.to_dict() for s in stores]), 200
-    
     elif request.method == 'POST':
         data = request.get_json()
         if Store.query.filter_by(name=data['name']).first():
             return jsonify({'message': 'Store already exists'}), 400
-        
         store = Store(name=data['name'])
         db.session.add(store)
         db.session.commit()
@@ -158,7 +250,6 @@ def manage_store(id):
         return jsonify({'message': 'Admin access required'}), 403
     
     store = Store.query.get_or_404(id)
-    
     if request.method == 'PUT':
         data = request.get_json()
         if Store.query.filter(Store.name == data['name'], Store.id != id).first():
@@ -166,7 +257,6 @@ def manage_store(id):
         store.name = data['name']
         db.session.commit()
         return jsonify(store.to_dict()), 200
-    
     elif request.method == 'DELETE':
         if Purchase.query.filter_by(store_id=id).first():
             return jsonify({'message': 'Cannot delete store that has purchases'}), 400
@@ -185,13 +275,17 @@ def manage_items():
     if request.method == 'GET':
         items = Item.query.order_by(Item.name).all()
         return jsonify([i.to_dict() for i in items]), 200
-    
     elif request.method == 'POST':
         data = request.get_json()
         if Item.query.filter_by(name=data['name']).first():
             return jsonify({'message': 'Item already exists'}), 400
         
-        item = Item(name=data['name'], category=data.get('category', ''))
+        category_id = data.get('category_id')
+        item = Item(
+            name=data['name'],
+            category_id=int(category_id) if category_id else None,
+            category=data.get('category', '')
+        )
         db.session.add(item)
         db.session.commit()
         return jsonify(item.to_dict()), 201
@@ -205,16 +299,16 @@ def manage_item(id):
         return jsonify({'message': 'Admin access required'}), 403
     
     item = Item.query.get_or_404(id)
-    
     if request.method == 'PUT':
         data = request.get_json()
         if Item.query.filter(Item.name == data['name'], Item.id != id).first():
             return jsonify({'message': 'Item name already exists'}), 400
         item.name = data['name']
+        category_id = data.get('category_id')
+        item.category_id = int(category_id) if category_id else None
         item.category = data.get('category', item.category)
         db.session.commit()
         return jsonify(item.to_dict()), 200
-    
     elif request.method == 'DELETE':
         if Purchase.query.filter_by(item_id=id).first():
             return jsonify({'message': 'Cannot delete item that has purchases'}), 400
@@ -233,12 +327,10 @@ def manage_packaging_list():
     if request.method == 'GET':
         packaging = Packaging.query.order_by(Packaging.name).all()
         return jsonify([p.to_dict() for p in packaging]), 200
-    
     elif request.method == 'POST':
         data = request.get_json()
         if Packaging.query.filter_by(name=data['name']).first():
             return jsonify({'message': 'Packaging type already exists'}), 400
-        
         pack = Packaging(name=data['name'])
         db.session.add(pack)
         db.session.commit()
@@ -253,7 +345,6 @@ def manage_packaging(id):
         return jsonify({'message': 'Admin access required'}), 403
     
     pack = Packaging.query.get_or_404(id)
-    
     if request.method == 'PUT':
         data = request.get_json()
         if Packaging.query.filter(Packaging.name == data['name'], Packaging.id != id).first():
@@ -261,7 +352,6 @@ def manage_packaging(id):
         pack.name = data['name']
         db.session.commit()
         return jsonify(pack.to_dict()), 200
-    
     elif request.method == 'DELETE':
         if Purchase.query.filter_by(packaging_id=id).first():
             return jsonify({'message': 'Cannot delete packaging that has purchases'}), 400
@@ -280,12 +370,10 @@ def manage_measurements_list():
     if request.method == 'GET':
         measurements = Measurement.query.order_by(Measurement.unit).all()
         return jsonify([m.to_dict() for m in measurements]), 200
-    
     elif request.method == 'POST':
         data = request.get_json()
         if Measurement.query.filter_by(unit=data['unit']).first():
             return jsonify({'message': 'Measurement unit already exists'}), 400
-        
         meas = Measurement(unit=data['unit'])
         db.session.add(meas)
         db.session.commit()
@@ -300,7 +388,6 @@ def manage_measurement(id):
         return jsonify({'message': 'Admin access required'}), 403
     
     meas = Measurement.query.get_or_404(id)
-    
     if request.method == 'PUT':
         data = request.get_json()
         if Measurement.query.filter(Measurement.unit == data['unit'], Measurement.id != id).first():
@@ -308,7 +395,6 @@ def manage_measurement(id):
         meas.unit = data['unit']
         db.session.commit()
         return jsonify(meas.to_dict()), 200
-    
     elif request.method == 'DELETE':
         if Purchase.query.filter_by(measurement_id=id).first():
             return jsonify({'message': 'Cannot delete measurement that has purchases'}), 400
@@ -322,7 +408,6 @@ def manage_measurement(id):
 def get_purchases():
     user_id = int(get_jwt_identity())
     purchases = Purchase.query.filter_by(user_id=user_id).order_by(Purchase.purchase_date.desc()).all()
-    
     return jsonify([p.to_dict() for p in purchases]), 200
 
 @app.route('/api/purchases', methods=['POST'])
@@ -358,10 +443,8 @@ def create_purchase():
         unit_price=float(data['unit_price']),
         on_sale=data.get('on_sale', False)
     )
-    
     db.session.add(purchase)
     db.session.commit()
-    
     return jsonify(purchase.to_dict()), 201
 
 @app.route('/api/purchases/<int:id>', methods=['PUT'])
@@ -369,8 +452,8 @@ def create_purchase():
 def update_purchase(id):
     user_id = int(get_jwt_identity())
     purchase = Purchase.query.filter_by(id=id, user_id=user_id).first_or_404()
-    
     data = request.get_json()
+    
     purchase.purchase_date = datetime.strptime(data['purchase_date'], '%Y-%m-%d')
     purchase.store_id = data['store_id']
     purchase.item_id = data['item_id']
@@ -382,9 +465,7 @@ def update_purchase(id):
     purchase.price = float(data['price'])
     purchase.unit_price = float(data['unit_price'])
     purchase.on_sale = data.get('on_sale', False)
-    
     db.session.commit()
-    
     return jsonify(purchase.to_dict()), 200
 
 @app.route('/api/purchases/<int:id>', methods=['DELETE'])
@@ -392,10 +473,8 @@ def update_purchase(id):
 def delete_purchase(id):
     user_id = int(get_jwt_identity())
     purchase = Purchase.query.filter_by(id=id, user_id=user_id).first_or_404()
-    
     db.session.delete(purchase)
     db.session.commit()
-    
     return jsonify({'message': 'Purchase deleted'}), 200
 
 # Reports routes
@@ -404,13 +483,15 @@ def delete_purchase(id):
 def price_history():
     user_id = int(get_jwt_identity())
     item_id = request.args.get('item_id')
+    category = request.args.get('category')
     
     query = Purchase.query.filter_by(user_id=user_id)
     if item_id:
         query = query.filter_by(item_id=item_id)
+    if category:
+        query = query.join(Item).join(Category, Item.category_id == Category.id).filter(Category.name == category)
     
     purchases = query.order_by(Purchase.purchase_date).all()
-    
     return jsonify([{
         'date': p.purchase_date.strftime('%Y-%m-%d'),
         'item': p.item.name if p.item else 'Unknown',
@@ -429,7 +510,6 @@ def price_history():
 @jwt_required()
 def store_comparison():
     user_id = int(get_jwt_identity())
-    
     results = db.session.query(
         Store.name,
         func.avg(Purchase.unit_price).label('avg_price'),
@@ -448,7 +528,6 @@ def store_comparison():
 @jwt_required()
 def monthly_spending():
     user_id = int(get_jwt_identity())
-    
     results = db.session.query(
         extract('year', Purchase.purchase_date).label('year'),
         extract('month', Purchase.purchase_date).label('month'),
@@ -461,12 +540,45 @@ def monthly_spending():
         'total': round(float(r[2]), 2)
     } for r in results]), 200
 
+@app.route('/api/reports/category-spending')
+@jwt_required()
+def category_spending():
+    user_id = int(get_jwt_identity())
+    results = db.session.query(
+        Category.name,
+        func.sum(Purchase.price).label('total')
+    ).join(Item, Purchase.item_id == Item.id).join(Category, Item.category_id == Category.id).filter(
+        Purchase.user_id == user_id
+    ).group_by(Category.name).all()
+    
+    uncategorized_total = db.session.query(
+        func.sum(Purchase.price).label('total')
+    ).join(Item, Purchase.item_id == Item.id).filter(
+        Purchase.user_id == user_id,
+        Item.category_id.is_(None)
+    ).scalar() or 0
+    
+    data = [{
+        'category': r[0] if r[0] else 'Uncategorized',
+        'total': round(float(r[1]), 2)
+    } for r in results]
+    
+    if uncategorized_total > 0:
+        data.append({'category': 'Uncategorized', 'total': round(float(uncategorized_total), 2)})
+    
+    return jsonify(data), 200
+
+@app.route('/api/categories')
+@jwt_required()
+def get_categories():
+    categories = Category.query.order_by(Category.name).all()
+    return jsonify([c.name for c in categories]), 200
+
 @app.route('/api/reports/items')
 @jwt_required()
 def get_items_list():
     items = Item.query.order_by(Item.name).all()
     stores = Store.query.order_by(Store.name).all()
-    
     return jsonify({
         'items': [i.to_dict() for i in items],
         'stores': [s.to_dict() for s in stores]
@@ -475,11 +587,13 @@ def get_items_list():
 @app.route('/api/data/options')
 @jwt_required()
 def get_options():
+    items = Item.query.order_by(Item.name).all()
     return jsonify({
         'packaging': [p.to_dict() for p in Packaging.query.order_by(Packaging.name).all()],
         'measurements': [m.to_dict() for m in Measurement.query.order_by(Measurement.unit).all()],
         'stores': [s.to_dict() for s in Store.query.order_by(Store.name).all()],
-        'items': [i.to_dict() for i in Item.query.order_by(Item.name).all()]
+        'items': [i.to_dict() for i in items],
+        'categories': [c.to_dict() for c in Category.query.order_by(Category.name).all()]
     }), 200
 
 @app.route('/api/admin/users', methods=['GET'])
@@ -489,7 +603,6 @@ def get_users():
     user = User.query.get(user_id)
     if not user or not user.is_admin:
         return jsonify({'message': 'Admin access required'}), 403
-    
     users = User.query.all()
     return jsonify([u.to_dict() for u in users]), 200
 
@@ -502,7 +615,6 @@ def manage_user(id):
         return jsonify({'message': 'Admin access required'}), 403
     
     user = User.query.get_or_404(id)
-    
     if request.method == 'PUT':
         data = request.get_json()
         if 'name' in data:
@@ -515,7 +627,6 @@ def manage_user(id):
             user.set_password(data['password'])
         db.session.commit()
         return jsonify(user.to_dict()), 200
-    
     elif request.method == 'DELETE':
         db.session.delete(user)
         db.session.commit()

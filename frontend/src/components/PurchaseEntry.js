@@ -13,6 +13,7 @@ function PurchaseEntry() {
     items: []
   });
   const [editingId, setEditingId] = useState(null);
+  const [categoryFilter, setCategoryFilter] = useState('');
   const [form, setForm] = useState({
     purchase_date: new Date(),
     store_id: '',
@@ -146,6 +147,7 @@ function PurchaseEntry() {
 
   const resetForm = () => {
     setEditingId(null);
+    setCategoryFilter('');
     setForm({
       purchase_date: new Date(),
       store_id: '',
@@ -171,6 +173,23 @@ function PurchaseEntry() {
 
   const { total: calculatedTotal } = calculateTotalAndUnitPrice();
 
+  // Group items by category, respecting category filter
+  const filteredItems = categoryFilter
+    ? options.items.filter(i => (i.category || '') === categoryFilter)
+    : options.items;
+
+  const groupedItems = filteredItems.reduce((groups, item) => {
+    const cat = item.category || 'Uncategorized';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(item);
+    return groups;
+  }, {});
+
+  const sortedCategories = Object.keys(groupedItems).sort();
+
+  // All distinct categories for the filter dropdown
+  const allCategories = [...new Set(options.items.map(i => i.category || 'Uncategorized'))].sort();
+
   return (
     <div className="purchase-entry">
       <div className="entry-form">
@@ -191,12 +210,25 @@ function PurchaseEntry() {
           </div>
           <div className="form-row">
             <div className="form-group">
+              <label>Category</label>
+              <select value={categoryFilter} onChange={(e) => { setCategoryFilter(e.target.value); setForm(prev => ({ ...prev, item_id: '' })); }}>
+                <option value="">All</option>
+                {allCategories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
+              </select>
+            </div>
+            <div className="form-group">
               <label>Item</label>
               <select name="item_id" value={form.item_id} onChange={handleChange} required>
                 <option value="">Select</option>
-                {options.items.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                {sortedCategories.map(cat => (
+                  <optgroup key={cat} label={cat}>
+                    {groupedItems[cat].map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                  </optgroup>
+                ))}
               </select>
             </div>
+          </div>
+          <div className="form-row">
             <div className="form-group">
               <label>Packaging</label>
               <select name="packaging_id" value={form.packaging_id} onChange={handleChange} required>
@@ -204,8 +236,6 @@ function PurchaseEntry() {
                 {options.packaging.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
             </div>
-          </div>
-          <div className="form-row">
             <div className="form-group">
               <label>Pricing Type</label>
               <select name="pricing_type" value={form.pricing_type} onChange={handleChange}>
@@ -213,16 +243,18 @@ function PurchaseEntry() {
                 <option value="weight">By Weight/Volume</option>
               </select>
             </div>
+          </div>
+          <div className="form-row">
             <div className="form-group">
               <label>{form.pricing_type === 'weight' ? 'Weight/Vol' : 'Size'}</label>
               <input type="number" name="size" value={form.size} onChange={handleChange} required step="0.001" min="0" />
             </div>
-          </div>
-          <div className="form-row">
             <div className="form-group">
               <label>Quantity</label>
               <input type="number" name="quantity" value={form.quantity} onChange={handleChange} required step="1" min="1" />
             </div>
+          </div>
+          <div className="form-row">
             <div className="form-group">
               <label>Unit</label>
               <select name="measurement_id" value={form.measurement_id} onChange={handleChange} required>
@@ -230,19 +262,19 @@ function PurchaseEntry() {
                 {options.measurements.map(m => <option key={m.id} value={m.id}>{m.unit}</option>)}
               </select>
             </div>
-          </div>
-          <div className="form-row">
             <div className="form-group">
               <label>{getPriceLabel()}</label>
               <input type="number" name="price" value={form.price} onChange={handleChange} required step="0.01" min="0" />
             </div>
+          </div>
+          <div className="form-row">
             <div className="form-group">
               <label>Total ($)</label>
               <input type="text" value={calculatedTotal} readOnly />
             </div>
-          </div>
-          <div className="form-group checkbox-group">
-            <label><input type="checkbox" name="on_sale" checked={form.on_sale} onChange={handleChange} /> On Sale 🏷️</label>
+            <div className="form-group checkbox-group">
+              <label><input type="checkbox" name="on_sale" checked={form.on_sale} onChange={handleChange} /> On Sale 🏷️</label>
+            </div>
           </div>
           <div className="form-actions">
             <button type="submit" className="btn-primary">{editingId ? 'Update' : 'Add'} Purchase</button>
