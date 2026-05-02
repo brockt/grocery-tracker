@@ -6,13 +6,14 @@ A self-hosted web app for tracking grocery prices across stores.
 
 git clone this repo
 cp .env.example .env
-Edit .env with your passwords
+nano .env  (edit passwords)
 docker compose up -d
 
 Access at http://localhost:3001
 Default admin: admin@tracker.local / Admin123!
 
 ## Features
+
 - Track purchases with store, item, packaging, size, quantity
 - Per-package and by-weight pricing
 - Price history charts with store comparison
@@ -21,7 +22,9 @@ Default admin: admin@tracker.local / Admin123!
 - Multi-user with admin panel
 
 ## Backup
+
 Copy the entire directory to back up everything including database.
 
 ## Requirements
+
 Docker and Docker Compose
