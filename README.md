@@ -29,3 +29,10 @@ Copy the entire directory to back up everything including database.
 ## Requirements
 
 Docker and Docker Compose
+
+## Screenshots
+
+![Purchases](screenshots/IMG_0063.jpeg)
+![Admin Dashboard](screenshots/IMG_0064.jpeg)
+![Manage Data](screenshots/IMG_0065.jpeg)
+
